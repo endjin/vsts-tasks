@@ -240,7 +240,6 @@ export class JobQueue {
                 var child = job.children[i];
                 childContents += walkHierarchy(child, indent + tab, padding + paddingTab);
             }
-
             return jobContents + childContents + indent + '</ul>\n';
         }
 
@@ -252,7 +251,6 @@ export class JobQueue {
             }
         }
 
-
         fs.writeFile(linkMarkdownFile, markdownContents, function callback(err) {
             tl.debug('writeFinalMarkdown().writeFile().callback()');
 
@@ -262,8 +260,6 @@ export class JobQueue {
             } else {
                 console.log('##vso[task.addattachment type=Distributedtask.Core.Summary;name=Jenkins Results;]' + linkMarkdownFile);
             }
-
         });
-
     }
 }

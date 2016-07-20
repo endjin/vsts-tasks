@@ -1,6 +1,14 @@
 /// <reference path="../../definitions/node.d.ts"/>
 import tl = require('vsts-task-lib/task');
 
+export function getFullErrorMessage(httpResponse, message: string): String {
+    var fullMessage = message +
+        '\nHttpResponse.statusCode=' + httpResponse.statusCode +
+        '\nHttpResponse.statusMessage=' + httpResponse.statusMessage +
+        '\nHttpResponse=\n' + JSON.stringify(httpResponse);
+    return fullMessage;
+}
+
 export function failReturnCode(httpResponse, message: string): void {
     var fullMessage = message +
         '\nHttpResponse.statusCode=' + httpResponse.statusCode +

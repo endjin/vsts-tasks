@@ -9,6 +9,8 @@ import tl = require('vsts-task-lib/task');
 import fs = require('fs');
 import path = require('path');
 import shell = require('shelljs');
+import Q = require('q');
+
 
 // node js modules
 var request = require('request');
@@ -43,38 +45,109 @@ tl.debug('jobQueueUrl=' + jobQueueUrl);
 
 var jobQueue: JobQueue = new JobQueue(username, password, captureConsole, capturePipeline, pollInterval);
 
-function trackJobQueued(queueUri: string) {
-    tl.debug('trackJobQueued()');
-    tl.debug('Tracking progress of job queue: ' + queueUri);
+function pollCreateRootJob(queueUri: string): Q.Promise<Job> {
+    var defer: Q.Deferred<Job> = Q.defer<Job>();
+
+    var poll = async () => {
+        await createRootJob(queueUri).then((job: Job) => {
+            if (job != null) {
+                defer.resolve(job);
+            } else {
+                // no job yet, but no failure either, so keep trying
+                setTimeout(poll, pollInterval);
+            }
+        }).fail((err: any) => {
+            defer.reject(err);
+        })
+    };
+
+    poll();
+
+    return defer.promise;
+}
+
+function createRootJob(queueUri: string): Q.Promise<Job> {
+    var defer: Q.Deferred<Job> = Q.defer<Job>();
+    tl.debug('createRootJob(): ' + queueUri);
+
     request.get({ url: queueUri }, function requestCallback(err, httpResponse, body) {
-        tl.debug('trackJobQueued().requestCallback()');
+        tl.debug('createRootJob().requestCallback()');
         if (err) {
-            util.fail(err);
+            if (err.code == 'ECONNRESET') {
+                tl.debug(err);
+                defer.resolve(null);
+            } else {
+                defer.reject(err);
+            }
         } else if (httpResponse.statusCode != 200) {
-            util.failReturnCode(httpResponse, 'Job progress tracking failed to read job queue');
+            defer.reject(util.getFullErrorMessage(httpResponse, 'Job progress tracking failed to read job queue'));
         } else {
             var parsedBody = JSON.parse(body);
             tl.debug("parsedBody for: " + queueUri + ": " + JSON.stringify(parsedBody));
 
             // canceled is spelled wrong in the body with 2 Ls (checking correct spelling also in case they fix it)
             if (parsedBody.cancelled || parsedBody.canceled) {
-                tl.setResult(tl.TaskResult.Failed, 'Jenkins job canceled.');
-                tl.exit(1);
-            }
-            var executable = parsedBody.executable;
-            if (!executable) {
-                // job has not actually been queued yet, keep checking
-                setTimeout(function () {
-                    trackJobQueued(queueUri);
-                }, pollInterval);
+                defer.reject('Jenkins job canceled.');
             } else {
-                var rootJob: Job = new Job(jobQueue, null, parsedBody.task.url, parsedBody.executable.url, parsedBody.executable.number, parsedBody.task.name);
-                jobQueue.start();
+                var executable = parsedBody.executable;
+                if (!executable) {
+                    // job has not actually been queued yet
+                    defer.resolve(null);
+                } else {
+                    var rootJob: Job = new Job(jobQueue, null, parsedBody.task.url, parsedBody.executable.url, parsedBody.executable.number, parsedBody.task.name);
+                    defer.resolve(rootJob);
+                }
             }
         }
     }).auth(username, password, true);
+
+    return defer.promise;
 }
 
+function pollSubmitJob(initialPostData): Q.Promise<string> {
+    var defer: Q.Deferred<string> = Q.defer<string>();
+
+    var poll = async () => {
+        await submitJob(initialPostData).then((queueUri: string) => {
+            if (queueUri != null) {
+                defer.resolve(queueUri);
+            } else {
+                // no queueUri yet, but no failure either, so keep trying
+                setTimeout(poll, pollInterval);
+            }
+        }).fail((err: any) => {
+            defer.reject(err);
+        })
+    };
+
+    poll();
+
+    return defer.promise;
+}
+
+function submitJob(initialPostData): Q.Promise<string> {
+    var defer: Q.Deferred<string> = Q.defer<string>();
+    tl.debug('submitJob(): ' + JSON.stringify(initialPostData));
+
+    request.post(initialPostData, function requestCallback(err, httpResponse, body) {
+        tl.debug('submitJob().requestCallback()');
+        if (err) {
+            if (err.code == 'ECONNRESET') {
+                tl.debug(err);
+                defer.resolve(null);
+            } else {
+                defer.reject(err);
+            }
+        } else if (httpResponse.statusCode != 201) {
+            defer.reject(util.getFullErrorMessage(httpResponse, 'Job creation failed.'));
+        } else {
+            var queueUri = util.addUrlSegment(httpResponse.headers.location, 'api/json');
+            defer.resolve(queueUri);
+        }
+    }).auth(username, password, true);
+
+    return defer.promise;
+}
 
 /**
  * Supported parameter types: boolean, string, choice, password
@@ -91,7 +164,7 @@ function parseJobParameters() {
         var paramLine = jobParameters[i];
         var splitIndex = paramLine.indexOf('=');
         if (splitIndex <= 0) { // either no paramValue (-1), or no paramName (0)
-            util.fail('Job parameters should be specified as "parameterName=parameterValue" with one name, value pair per line. Invalid parameter line: ' + paramLine);
+            throw 'Job parameters should be specified as "parameterName=parameterValue" with one name, value pair per line. Invalid parameter line: ' + paramLine;
         }
         var paramName = paramLine.substr(0, splitIndex);
         var paramValue = paramLine.slice(splitIndex + 1);
@@ -100,20 +173,21 @@ function parseJobParameters() {
     return formData;
 }
 
-var initialPostData = parameterizedJob ?
-    { url: jobQueueUrl, formData: parseJobParameters() } :
-    { url: jobQueueUrl };
+async function doWork() {
+    try {
+        var initialPostData = parameterizedJob ?
+            { url: jobQueueUrl, formData: parseJobParameters() } :
+            { url: jobQueueUrl };
 
-tl.debug('initialPostData = ' + JSON.stringify(initialPostData));
-
-request.post(initialPostData, function optionalCallback(err, httpResponse, body) {
-    if (err) {
-        util.fail(err);
-    } else if (httpResponse.statusCode != 201) {
-        util.failReturnCode(httpResponse, 'Job creation failed.');
-    } else {
+        tl.debug('initialPostData = ' + JSON.stringify(initialPostData)); var queueUri = await pollSubmitJob(initialPostData);
         console.log('Jenkins job queued');
-        var queueUri = util.addUrlSegment(httpResponse.headers.location, 'api/json');
-        trackJobQueued(queueUri);
+        var rootJob = await pollCreateRootJob(queueUri);
+        jobQueue.start();
+    } catch (e) {
+        tl.debug(e.message);
+        tl.setResult(tl.TaskResult.Failed, e.message);
     }
-}).auth(username, password, true);
+
+}
+
+doWork();

@@ -14,11 +14,8 @@ import jobsearch = require('./jobsearch');
 import JobSearch = jobsearch.JobSearch;
 import jobqueue = require('./jobqueue');
 import JobQueue = jobqueue.JobQueue;
-import util = require('./util');
-import fail = util.fail;
-import failReturnCode = util.failReturnCode;
-import addUrlSegment = util.addUrlSegment;
-import handleConnectionResetError = util.handleConnectionResetError;
+
+import * as Util from './util';
 
 export enum JobState {
     New,       // 0
@@ -91,7 +88,7 @@ export class Job {
                 validStateChange = false; // these are terminal states
             }
             if (!validStateChange) {
-                fail('Invalid state change from: ' + oldState + ' ' + this);
+                Util.fail('Invalid state change from: ' + oldState + ' ' + this);
             }
         }
     }
@@ -135,7 +132,7 @@ export class Job {
     setStreaming(executableNumber: number): void {
         if (this.state == JobState.New || this.state == JobState.Locating) {
             this.executableNumber = executableNumber;
-            this.executableUrl = addUrlSegment(this.taskUrl, this.executableNumber.toString());
+            this.executableUrl = Util.addUrlSegment(this.taskUrl, this.executableNumber.toString());
             this.changeState(JobState.Streaming);
 
             this.consoleLog('******************************************************************************\n');
@@ -147,7 +144,7 @@ export class Job {
                 console.log('Jenkins job pending: ' + this.executableUrl);
             }
         } else if (this.state == JobState.Joined || this.state == JobState.Cut) {
-            fail('Can not be set to streaming: ' + this);
+            Util.fail('Can not be set to streaming: ' + this);
         }
         this.joinOthersToMe();
     }
@@ -158,7 +155,7 @@ export class Job {
         if (thisJob.parent != null) {
             thisJob.search.determineMainJob(thisJob.executableNumber, function (mainJob: Job, secondaryJobs: Job[]) {
                 if (mainJob != thisJob) {
-                    fail('Illegal call in joinOthersToMe(), job:' + thisJob);
+                    Util.fail('Illegal call in joinOthersToMe(), job:' + thisJob);
                 }
                 for (var i in secondaryJobs) {
                     var secondaryJob = secondaryJobs[i];
@@ -175,7 +172,7 @@ export class Job {
         this.joined = joinedJob;
         this.changeState(JobState.Joined);
         if (joinedJob.state == JobState.Joined || joinedJob.state == JobState.Cut) {
-            fail('Invalid join: ' + this);
+            Util.fail('Invalid join: ' + this);
         }
 
         // recursively cut all children
@@ -240,16 +237,16 @@ export class Job {
         if (thisJob.search.parsedTaskBody) {
             addPipelineJobs();
         } else {
-            var apiTaskUrl = addUrlSegment(thisJob.taskUrl, "/api/json");
+            var apiTaskUrl = Util.addUrlSegment(thisJob.taskUrl, "/api/json");
             thisJob.debug('getting job task URL:' + apiTaskUrl);
             request.get({ url: apiTaskUrl }, function requestCallBack(err, httpResponse, body) {
                 if (!thisJob.search.parsedTaskBody) { // another callback could have updated thisJob
                     if (err) {
-                        handleConnectionResetError(err); // something went bad
-                        thisJob.stopWork(this.queue.pollInterval, thisJob.state);
+                        Util.handleConnectionResetError(err); // something went bad
+                        thisJob.stopWork(thisJob.queue.pollInterval, thisJob.state);
                         return;
                     } else if (httpResponse.statusCode != 200) {
-                        failReturnCode(httpResponse, 'Unable to retrieve job: ' + thisJob.name);
+                        Util.failReturnCode(httpResponse, 'Unable to retrieve job: ' + thisJob.name);
                     } else {
                         var parsedTaskBody = JSON.parse(body);
                         tl.debug("parsedBody for: " + apiTaskUrl + ": " + JSON.stringify(parsedTaskBody));
@@ -285,16 +282,16 @@ export class Job {
         if (!thisJob.queue.captureConsole) { // transition to Queued
             thisJob.stopWork(0, JobState.Queued);
         } else { // stay in Finishing, or eventually go to Done
-            var resultUrl = addUrlSegment(thisJob.executableUrl, 'api/json');
+            var resultUrl = Util.addUrlSegment(thisJob.executableUrl, 'api/json');
             thisJob.debug('Tracking completion status of job: ' + resultUrl);
             request.get({ url: resultUrl }, function requestCallback(err, httpResponse, body) {
                 tl.debug('finish().requestCallback()');
                 if (err) {
-                    handleConnectionResetError(err); // something went bad
+                    Util.handleConnectionResetError(err); // something went bad
                     thisJob.stopWork(thisJob.queue.pollInterval, thisJob.state);
                     return;
                 } else if (httpResponse.statusCode != 200) {
-                    failReturnCode(httpResponse, 'Job progress tracking failed to read job result');
+                    Util.failReturnCode(httpResponse, 'Job progress tracking failed to read job result');
                 } else {
                     var parsedBody = JSON.parse(body);
                     thisJob.debug("parsedBody for: " + resultUrl + ": " + JSON.stringify(parsedBody));
@@ -316,19 +313,19 @@ export class Job {
      */
     streamConsole(): void {
         var thisJob = this;
-        var fullUrl = addUrlSegment(thisJob.executableUrl, '/logText/progressiveText/?start=' + thisJob.jobConsoleOffset);
+        var fullUrl = Util.addUrlSegment(thisJob.executableUrl, '/logText/progressiveText/?start=' + thisJob.jobConsoleOffset);
         thisJob.debug('Tracking progress of job URL: ' + fullUrl);
         request.get({ url: fullUrl }, function requestCallback(err, httpResponse, body) {
             tl.debug('streamConsole().requestCallback()');
             if (err) {
-                handleConnectionResetError(err); // something went bad
+                Util.handleConnectionResetError(err); // something went bad
                 thisJob.stopWork(thisJob.queue.pollInterval, thisJob.state);
                 return;
             } else if (httpResponse.statusCode == 404) {
                 // got here too fast, stream not yet available, try again in the future
                 thisJob.stopWork(thisJob.queue.pollInterval, thisJob.state);
             } else if (httpResponse.statusCode != 200) {
-                failReturnCode(httpResponse, 'Job progress tracking failed to read job progress');
+                Util.failReturnCode(httpResponse, 'Job progress tracking failed to read job progress');
             } else {
                 thisJob.consoleLog(body); // redirect Jenkins console to task console
                 var xMoreData = httpResponse.headers['x-more-data'];
