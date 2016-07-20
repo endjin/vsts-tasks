@@ -234,41 +234,25 @@ export class Job {
 
     initialize() {
         var thisJob = this;
-        if (thisJob.search.parsedTaskBody) {
-            addPipelineJobs();
-        } else {
-            var apiTaskUrl = Util.addUrlSegment(thisJob.taskUrl, "/api/json");
-            thisJob.debug('getting job task URL:' + apiTaskUrl);
-            request.get({ url: apiTaskUrl }, function requestCallBack(err, httpResponse, body) {
-                if (!thisJob.search.parsedTaskBody) { // another callback could have updated thisJob
-                    if (err) {
-                        Util.handleConnectionResetError(err); // something went bad
-                        thisJob.stopWork(thisJob.queue.pollInterval, thisJob.state);
-                        return;
-                    } else if (httpResponse.statusCode != 200) {
-                        Util.failReturnCode(httpResponse, 'Unable to retrieve job: ' + thisJob.name);
-                    } else {
-                        var parsedTaskBody = JSON.parse(body);
-                        tl.debug("parsedBody for: " + apiTaskUrl + ": " + JSON.stringify(parsedTaskBody));
-                        thisJob.search.initialize(parsedTaskBody);
-                    }
+        thisJob.search.initialize().then(() => {
+            if (thisJob.search.initialized) {
+                if (thisJob.queue.capturePipeline) {
+                    var downstreamProjects = thisJob.search.parsedTaskBody.downstreamProjects;
+                    downstreamProjects.forEach((project) => {
+                        new Job(thisJob.queue, thisJob, project.url, null, -1, project.name); // will add a new child to the tree
+                    });
                 }
-                addPipelineJobs();
-            }).auth(thisJob.queue.username, thisJob.queue.password, true);
-        }
-
-        function addPipelineJobs() {
-            if (thisJob.queue.capturePipeline) {
-                var downstreamProjects = thisJob.search.parsedTaskBody.downstreamProjects;
-                downstreamProjects.forEach((project) => {
-                    new Job(thisJob.queue, thisJob, project.url, null, -1, project.name); // will add a new child to the tree
-                });
+                thisJob.search.resolveIfKnown(thisJob); // could change state
+                var newState = (thisJob.state == JobState.New) ? JobState.Locating : thisJob.state; // another call back could also change state 
+                var nextWorkDelay = (newState == JobState.Locating) ? thisJob.queue.pollInterval : thisJob.workDelay;
+                thisJob.stopWork(nextWorkDelay, newState);
+            } else {
+                //search not initialized, so try again
+                thisJob.stopWork(thisJob.queue.pollInterval, thisJob.state);
             }
-            thisJob.search.resolveIfKnown(thisJob); // could change state
-            var newState = (thisJob.state == JobState.New) ? JobState.Locating : thisJob.state; // another call back could also change state 
-            var nextWorkDelay = (newState == JobState.Locating) ? thisJob.queue.pollInterval : thisJob.workDelay;
-            return thisJob.stopWork(nextWorkDelay, newState);
-        };
+        }).fail((err) => {
+            throw err;
+        });
     }
 
     /**

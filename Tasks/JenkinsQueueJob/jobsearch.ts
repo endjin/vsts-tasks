@@ -6,9 +6,11 @@ import tl = require('vsts-task-lib/task');
 import fs = require('fs');
 import path = require('path');
 import shell = require('shelljs');
+import Q = require('q');
 
 // node js modules
 var request = require('request');
+
 
 import job = require('./job');
 import Job = job.Job;
@@ -16,7 +18,7 @@ import JobState = job.JobState;
 import jobqueue = require('./jobqueue');
 import JobQueue = jobqueue.JobQueue;
 
-import * as Util from './util';
+import util = require('./util');
 
 export class JobSearch {
     taskUrl: string; // URL for the job definition
@@ -28,11 +30,16 @@ export class JobSearch {
         this.queue = queue;
         this.taskUrl = taskUrl;
         this.name = name;
+
+        this.initialize().fail((err) => {
+            throw err;
+        });
     }
 
     foundCauses = []; // all found causes indexed by executableNumber
 
-    parsedTaskBody; // the parsed task body of the job definition
+    initialized: boolean = false;
+    parsedTaskBody: any; // the parsed task body of the job definition
     initialSearchBuildNumber: number = -1; // the intial, most likely build number for child jobs
     nextSearchBuildNumber: number = -1; // the next build number to check
     searchDirection: number = -1; // the direction to search, start by searching backwards
@@ -40,11 +47,42 @@ export class JobSearch {
     working: boolean = false;
     workDelay: number = 0;
 
-    initialize(parsedTaskBody) {
-        this.parsedTaskBody = parsedTaskBody;
-        this.initialSearchBuildNumber = parsedTaskBody.lastBuild.number;
-        this.nextSearchBuildNumber = this.initialSearchBuildNumber;
-        this.searchDirection = -1;  // start searching backwards
+    initialize(): Q.Promise<void> {
+        var defer: Q.Deferred<void> = Q.defer<void>();
+        var thisSearch = this;
+        if (!thisSearch.initialized) { //only initialize once
+            var apiTaskUrl = util.addUrlSegment(thisSearch.taskUrl, "/api/json");
+            tl.debug('getting job task URL:' + apiTaskUrl);
+            request.get({ url: apiTaskUrl }, function requestCallBack(err, httpResponse, body) {
+                if (!thisSearch.initialized) { // only initialize once
+                    if (err) {
+                        if (err.code == 'ECONNRESET') {
+                            tl.debug(err);
+                            // resolve but do not initialize -- a job will trigger this again
+                            defer.resolve(null);
+                        } else {
+                            defer.reject(err);
+                        }
+                    } else if (httpResponse.statusCode != 200) {
+                        defer.reject(util.getFullErrorMessage(httpResponse, 'Unable to retrieve job: ' + thisSearch.name));
+                    } else {
+                        var parsedBody: any = JSON.parse(body);
+                        tl.debug("parsedBody for: " + apiTaskUrl + ": " + JSON.stringify(parsedBody));
+                        thisSearch.initialized = true;
+                        thisSearch.parsedTaskBody = parsedBody;
+                        thisSearch.initialSearchBuildNumber = parsedBody.lastBuild.number;
+                        thisSearch.nextSearchBuildNumber = thisSearch.initialSearchBuildNumber;
+                        thisSearch.searchDirection = -1;  // start searching backwards
+                        defer.resolve(null);
+                    }
+                } else {
+                    defer.resolve(null);
+                }
+            }).auth(thisSearch.queue.username, thisSearch.queue.password, true);
+        } else { // already initialized
+            defer.resolve(null);
+        }
+        return defer.promise;
     }
 
     doWork() {
@@ -75,7 +113,7 @@ export class JobSearch {
     determineMainJob(executableNumber: number, callback) {
         var thisSearch: JobSearch = this;
         if (!thisSearch.foundCauses[executableNumber]) {
-            Util.fail('No known exeuction number: ' + executableNumber + ' for job: ' + thisSearch.name);
+            util.fail('No known exeuction number: ' + executableNumber + ' for job: ' + thisSearch.name);
         } else {
             var causes = thisSearch.foundCauses[executableNumber];
             var causesThatRan: Job[] = []; // these are all the causes for this executableNumber that are running/ran
@@ -91,7 +129,7 @@ export class JobSearch {
                     } else if (job.state == JobState.Joined || job.state == JobState.Cut) {
                         causesThatWontRun.push(job);
                     } else {
-                        Util.fail('Illegal state: ' + job);
+                        util.fail('Illegal state: ' + job);
                     }
                 }
             }
@@ -106,7 +144,7 @@ export class JobSearch {
                         if (masterJob == null) {
                             masterJob = child;
                         } else {
-                            Util.fail('Can not have more than one master: ' + child);
+                            util.fail('Can not have more than one master: ' + child);
                         }
                     } else {
                         potentialMasterJobs.push(child);
@@ -204,19 +242,19 @@ export class JobSearch {
             thisSearch.stopWork(0); // found everything we were looking for
             return;
         } else {
-            var url = Util.addUrlSegment(thisSearch.taskUrl, thisSearch.nextSearchBuildNumber + "/api/json");
+            var url = util.addUrlSegment(thisSearch.taskUrl, thisSearch.nextSearchBuildNumber + "/api/json");
             tl.debug('pipeline, locating child execution URL:' + url);
             request.get({ url: url }, function requestCallback(err, httpResponse, body) {
                 tl.debug('locateExecution().requestCallback()');
                 if (err) {
-                    Util.handleConnectionResetError(err); // something went bad
+                    util.handleConnectionResetError(err); // something went bad
                     thisSearch.stopWork(thisSearch.queue.pollInterval);
                     return;
                 } else if (httpResponse.statusCode == 404) {
                     // try again in the future
                     thisSearch.stopWork(thisSearch.queue.pollInterval);
                 } else if (httpResponse.statusCode != 200) {
-                    Util.failReturnCode(httpResponse, 'Job pipeline tracking failed to read downstream project');
+                    util.failReturnCode(httpResponse, 'Job pipeline tracking failed to read downstream project');
                 } else {
                     var parsedBody = JSON.parse(body);
                     tl.debug("parsedBody for: " + url + ": " + JSON.stringify(parsedBody));
