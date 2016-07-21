@@ -901,7 +901,6 @@ function setRunInParallellIfApplicable(vsVersion: number) {
         if (!isNaN(vsVersion) && vsVersion >= 14) {
             var vs14Common = tl.getVariable("VS140COMNTools");
             if (vsVersion > 14 || (vs14Common && pathExistsAsFile(path.join(vs14Common, "..\\IDE\\CommonExtensions\\Microsoft\\TestWindow\\TE.TestModes.dll")))) {
-                setRegistryKeyForParallelExecution(vsVersion);
                 return;
             }
         }
@@ -949,29 +948,6 @@ function getFloatsFromStringArray(inputArray: string[]): number[] {
         }
     }
     return outputArray;
-}
-
-function setRegistryKeyForParallelExecution(vsVersion: number) {
-    var regKey = "HKCU\\SOFTWARE\\Microsoft\\VisualStudio\\" + vsVersion.toFixed(1) + "_Config\\FeatureFlags\\TestingTools\\UnitTesting\\Taef";
-    regedit.createKey(regKey, function (err) {
-        if (!err) {
-            var values = {
-                [regKey]: {
-                    'Value': {
-                        value: '1',
-                        type: 'REG_DWORD'
-                    }
-                }
-            };
-            regedit.putValue(values, function (err) {
-                if (err) {
-                    tl.warning(tl.loc('ErrorOccuredWhileSettingRegistry', err));
-                }
-            });
-        } else {
-            tl.warning(tl.loc('ErrorOccuredWhileSettingRegistry', err));
-        }
-    });
 }
 
 function readFileContents(filePath: string, encoding: string): Q.Promise<string> {
